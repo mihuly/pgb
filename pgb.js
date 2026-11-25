@@ -73,10 +73,22 @@ var PGB = (function(){
     while(out.length && out[out.length-1]==='') out.pop();
     return out.map(l=>l.replace(/\u00a0/g,' ')); // в PDF обычный пробел – чтобы копировалось чисто
   }
+  // Типографика: знаки и единицы не отрываются от числа, короткие слова и предлоги не висят в конце строки
+  const NB=' ', SHORT='[А-Яа-яЁёA-Za-z]{1,2}|для|под|над|при|без|про|что|как|или|изо|ото|обо|из-за|из-под';
+  const RX_SHORT=new RegExp('(^|[\\s«„"(])('+SHORT+')[ \\t]+','g');
+  function typo(s){
+    s=s.replace(/(\d)[ \t]+(?=\d{3}(?!\d))/g,'$1'+NB)                                   // 1 850 000
+       .replace(/(\d)[ \t]+(?=(%|‰|₽|€|\$|руб|млн|млрд|тыс|трлн|чел|шт|мес|лет|год|дн|раз|км|кг|м²|кв))/gi,'$1'+NB)
+       .replace(/[ \t]+(?=[₽€$%‰](?![\wА-Яа-яЁё]))/g,NB)                           // «млн ₽», «34 %»
+       .replace(/[ \t]+(?=[–—])/g,NB)                                                       // тире не начинает строку
+       .replace(/(№|§)[ \t]+/g,'$1'+NB);
+    for(let i=0;i<3;i++) s=s.replace(RX_SHORT,(m,a,w)=>a+w+NB);
+    return s;
+  }
   // Текстовый блок: подбирает кегль от size до min, при нехватке места – обрезает и помечает over
   function T(o){
     o=Object.assign({wt:'r',lh:1.3,min:o.size,color:'#191919',align:'left'},o); o.t='text';
-    const txt=String(o.text==null?'':o.text).trim(); let s=o.size;
+    const txt=typo(String(o.text==null?'':o.text).trim()); let s=o.size;
     for(;;){
       let lines=wrap(txt,s,o.wt,o.w); const L=s*o.lh;
       let cap=Math.max(1,Math.floor((o.h+.5)/L)); if(o.max) cap=Math.min(cap,o.max);
@@ -438,34 +450,67 @@ var PGB = (function(){
 
   function hash(s){ let h=2166136261; for(const ch of String(s)){ h^=ch.codePointAt(0); h=Math.imul(h,16777619); } return h>>>0; }
   // Фоны вперемешку: у каждого участника своя стабильная раскладка, «Другой фон» её перетасовывает
-  function bgOrder(d,n){ let s=hash((d.name||'')+'|'+(d.company||''))+(d.bgShift||0)*7919; const a=[...Array(n).keys()];
-    for(let i=n-1;i>0;i--){ s=(Math.imul(s,1103515245)+12345)>>>0; const j=s%(i+1); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+  function rng(seed){ let a=seed>>>0; return ()=>{ a=(a+0x6D2B79F5)>>>0; let t=a; t=Math.imul(t^t>>>15,t|1); t^=t+Math.imul(t^t>>>7,t|61); return ((t^t>>>14)>>>0)/4294967296; }; }
   const active=d=>SLIDES.filter(s=>!s.opt||d['inc'+s.n]==='1');
   // calm-слайды (много текста) получают фоны без кружков и линий, остальные – любые
-  function build(d,bgs){ bgs=bgs||[]; const ord=bgOrder(d,bgs.length).map(i=>bgs[i]);
-    const calm=ord.filter(b=>!b.busy), any=ord.filter(b=>b.busy).concat(calm); let ci=0, ai=0;
-    return active(d).map(s=>{ const bg=!ord.length?null:(s.calm&&calm.length?calm[ci++%calm.length]:any[ai++%any.length]);
+  // Фоны: случайный выбор для каждого слайда (зерно – имя, компания и bgSeed), соседние слайды не повторяются
+  function build(d,bgs){ bgs=bgs||[]; const r=rng(hash((d.name||'')+'|'+(d.company||'')+'|'+(d.bgSeed||0)));
+    const calm=bgs.filter(b=>!b.busy); let prev=null;
+    return active(d).map(s=>{ let bg=null;
+      if(bgs.length){ let pool=s.calm&&calm.length?calm:bgs; const alt=pool.filter(b=>b!==prev); if(alt.length) pool=alt; bg=pool[Math.floor(r()*pool.length)]; prev=bg; }
       const th=Object.assign({},THEMES[(bg&&bg.tone)||'light']); if(bg&&bg.shade==='grey') th.card='#FFFFFF'; th.cardOp=.92;
       const all=s.build(d,th);
       return {id:s.id,n:s.n,name:s.name,title:s.title(d),bg,els:all.filter(e=>e.t!=='warn'),warn:all.filter(e=>e.t==='warn').map(e=>e.text)}; }); }
 
-  // Текст заявки: по слайдам, в порядке брифа
-  function toText(d){
-    const L=['ЗАЯВКА «ПУТЬ ГЕРОЯ. БИЗНЕС»',''];
-    for(const s of active(d)){
-      L.push('СЛАЙД '+s.n+'. '+s.title(d).toUpperCase());
-      if(s.txt) L.push(...s.txt(d));
-      else for(const f of s.form.fields.flatMap(f=>f.row||[f])){
-        if(!f.k||f.type==='img'||/^inc\d/.test(f.k)) continue;
-        if(f.type==='seg'){ const o=f.opts.find(o=>o[0]===String(d[f.k])); L.push(f.label+': '+(o?o[1]:'—')); continue; }
-        const lab=f.k in LAB?LAB[f.k]:(READY.concat(BIZ,MODEL,MODEL2,MARKET,ASSETS,WHY,ECON).find(x=>x[0]===f.k)||[0,f.label])[1];
-        L.push(lab+': '+(f.k==='date'?date(d[f.k])||'—':fmtv(d[f.k],f.fmt||'t',d.cur)));
-      }
-      if(s.id==='cover') L.push('Стадия: '+(d.stage==='idea'?'идея / модель в проверке':'бизнес работает'));
-      L.push('');
-    }
-    return L.join('\r\n');
+  // Заявка: структурированный документ по разделам (для .docx)
+  function toDoc(d){
+    const out=[], cur=d.cur, idea=d.stage==='idea', v=x=>has(x)?String(x).trim():'';
+    const kv=(k,x)=>{ if(has(x)&&x!=='—') out.push({t:'kv',k,v:String(x).trim()}); };
+    const li=(b,x)=>{ if(has(b)||has(x)) out.push({t:'li',b:v(b),v:v(x)}); };
+    const p=(x,o)=>{ if(has(x)) out.push(Object.assign({t:'p',v:String(x).trim()},o||{})); };
+    const block=(type,title,fn)=>{ const n=out.length; out.push({t:type,v:title}); const m=out.length; fn(); if(out.length===m) out.length=n; };
+    const sec=(title,fn)=>block('h',title,fn), sub=(title,fn)=>block('sub',title,fn);
+    const fmtFor=(k,f)=>has(d[k])?fmtv(d[k],f,cur):'';
+    out.push({t:'title',v:'Заявка в акселератор «Путь Героя. Бизнес»'});
+    out.push({t:'meta',v:[d.company,d.name,date(d.date)].filter(has).join(' · ')});
+    sec('Общая информация',()=>{ kv('Предприниматель',d.name); kv('Компания',d.company); kv('Сфера деятельности',d.sphere);
+      kv('Стадия проекта',idea?'идея / модель в проверке':'действующий бизнес'); if(has(d.amount)) kv('Запрашиваемая сумма',money(d.amount,cur)); kv('Горизонт реализации',hz(d.horizon)); });
+    sec('О предпринимателе',()=>Object.keys(LAB).forEach(k=>kv(LAB[k],d[k])));
+    sec('О бизнесе',()=>{ BIZ.forEach(b=>kv(b[1],d[b[0]]));
+      sub('Как устроен бизнес',()=>{ MODEL.forEach(b=>kv(b[1],d[b[0]])); MODEL2.forEach(b=>kv(b[1],d[b[0]])); }); });
+    sec(idea?'Текущее положение и проверка модели':'Текущее положение',()=>{
+      sub('Ключевые показатели '+(has(d.period)?d.period:'за последние 12 месяцев'),()=>{
+        [['a_rev_m','Выручка в месяц','m'],['a_rev_y','Выручка за год','m'],['a_np_m','Чистая прибыль в месяц','m'],['a_np_y','Чистая прибыль за год','m'],['a_check','Средний чек','m'],['a_clients','Количество клиентов','n'],['a_margin','Рентабельность','p'],['a_staff','Количество сотрудников','n']].forEach(r=>kv(r[1],fmtFor(r[0],r[2]))); });
+      sub(idea?'Как подтверждается модель':'Доказательства',()=>{ PROOF[idea?'idea':'work'].forEach(m=>kv(m[1],d['pf_'+m[0]])); kv(idea?'Что уже проверено':'Отзывы и кейсы',d.proofText); }); });
+    sec('Что мешает бизнесу расти',()=>{ for(let i=1;i<=5;i++) if(has(d['pr'+i])) li(d['pr'+i],d['pc'+i]); });
+    sec('Цель на 12 месяцев (точка В)',()=>{
+      POINTB.forEach(r=>{ if(!has(d[r[0]])) return; const now=r[3]==='t'?(d.b_geo_now||d[r[2]]):(has(d[r[2]])?fmtv(d[r[2]],r[3],cur):''); li(r[1],(has(now)?'сейчас '+now+' → ':'')+'через 12 месяцев '+fmtv(d[r[0]],r[3],cur)); });
+      POINTB2.forEach(b=>kv(b[1],d[b[0]])); });
+    sec('Стратегия роста',()=>{
+      sub('Рычаги роста',()=>{ for(let i=1;i<=4;i++) if(has(d['lv'+i])) li(d['lv'+i],d['lvd'+i]); });
+      sub('План трансформации от А к В',()=>[['p3','k3','Первые 3 месяца'],['p6','k6','6 месяцев'],['p12','k12','12 месяцев']].forEach(s=>{ if(has(d[s[0]])||has(d[s[1]])) kv(s[2],[v(d[s[0]]),has(d[s[1]])?'KPI: '+v(d[s[1]]):''].filter(Boolean).join('\n')); })); });
+    sec('Инвестиции и финансы',()=>{
+      if(has(d.amount)) kv('Запрашиваемая сумма',money(d.amount,cur));
+      sub('Распределение инвестиций',()=>{ const rows=invRows(d), nums=rows.map(r=>pnum(r[1])), ok=rows.length&&nums.every(n=>!isNaN(n)), sum=ok?nums.reduce((a,b)=>a+b,0):0;
+        rows.forEach((r,i)=>li(r[0],mon(r[1],cur)+(ok&&sum?' ('+Math.round(nums[i]/sum*100)+' %)':''))); if(ok) kv('Итого',money(String(sum),cur)); kv('Обоснование расходов',d.inv_note); });
+      sub('Экономика бизнеса',()=>{ ECON.forEach(e=>kv(e[1],fmtFor(e[0],e[2]))); p(d.e_note); });
+      sub('Финансовый прогноз: три сценария'+(has(d.sc_period)?' ('+d.sc_period+')':''),()=>SCN.forEach(s=>{ const parts=SCM.filter(m=>has(d['sc_'+s[0]+'_'+m[0]])).map(m=>m[1].toLowerCase()+' – '+fmtv(d['sc_'+s[0]+'_'+m[0]],m[2],cur)); if(parts.length) li(s[1],parts.join('; ')); })); });
+    sec('Условия для инвестора',()=>{ kv('Формат инвестиций',[typeLabel(d),d.inv_format].filter(has).join(': ')); kv('Доля или доход Аллы',d.inv_share); kv('Прогнозируемый ROI',d.inv_roi); kv('Срок окупаемости',d.inv_payback); ALLA2.forEach(b=>kv(b[1],d[b[0]]));
+      sub('Почему стоит инвестировать в этот бизнес',()=>WHY.forEach(w=>kv(w[1],d[w[0]]))); });
+    sec('Риски и защита инвестиций',()=>{ for(let i=1;i<=5;i++) if(has(d['rn'+i])&&(has(d['rp'+i])||has(d['rm'+i]))) li(d['rn'+i],[has(d['rp'+i])?'вероятность / влияние: '+v(d['rp'+i]):'',has(d['rm'+i])?'как минимизируем: '+v(d['rm'+i]):''].filter(Boolean).join('. '));
+      sub('Контроль и защита',()=>CTL.forEach(b=>kv(b[1],d[b[0]]))); });
+    sec('Личная готовность к партнёрству',()=>READY.forEach(b=>kv(b[1],d[b[0]])));
+    if(d.inc19==='1') sec('Рынок и конкуренты',()=>MARKET.forEach(b=>kv(b[1],d[b[0]])));
+    if(d.inc20==='1') sec('Активы и юридическая структура',()=>ASSETS.forEach(b=>kv(b[1],d[b[0]])));
+    sec('Итоговое предложение',()=>{ kv('Бизнес',d.company); kv('Предприниматель',d.name); if(has(d.amount)) kv('Сумма инвестиций',money(d.amount,cur)); kv('Срок реализации',hz(d.horizon));
+      kv('Предлагаемый формат',[typeLabel(d),d.inv_format].filter(has).join(': ')); kv('Ожидаемая доходность',d.off_yield||d.inv_roi);
+      sub('Что предлагаю согласовать',()=>AGREE.forEach(a=>li('',a))); p('Цель – создать бизнес, в рост которого выгодно инвестировать.',{i:1}); });
+    let n=0; out.forEach(b=>{ if(b.t==='h') b.v=(++n)+'. '+b.v; });
+    return out;
   }
+  // Та же заявка простым текстом
+  function toText(d){ return toDoc(d).map(b=>b.t==='title'?b.v.toUpperCase():b.t==='h'?'\r\n'+b.v.toUpperCase():b.t==='sub'?'\r\n'+b.v:b.t==='kv'?b.k+': '+b.v:b.t==='li'?'– '+(b.b?b.b+(b.v?' – '+b.v:''):b.v):b.v).join('\r\n'); }
+
 
   // ---------- PDF ----------
   function baseline(e,i){ const m=F.met[F.met[e.wt]?e.wt:'r'], L=e.fs*e.lh, top=e.y+i*L; return top+(L-(m.A+m.D)*e.fs)/2+m.A*e.fs; }
@@ -486,7 +531,7 @@ var PGB = (function(){
     }
     return doc;
   }
-  return {CONFIG,W,H,CUR,PROOF,LAB,SLIDES,DEFAULTS,initFonts,build,toPDF,toText,T,money,num,pct,date,has,hz};
+  return {CONFIG,W,H,CUR,PROOF,LAB,SLIDES,DEFAULTS,initFonts,build,toPDF,toText,toDoc,T,money,num,pct,date,has,hz,typo};
 })();
 
 
@@ -650,7 +695,43 @@ async function exportPDF(){
   catch(e){ console.error(e); status('Не получилось собрать PDF. Попробуйте ещё раз или откройте страницу на компьютере.'); }
   btn.disabled=false;
 }
-function exportTXT(){ download(new Blob([P.toText(d)],{type:'text/plain;charset=utf-8'}),fileName('txt').replace('Презентация','Заявка')); }
+/* ---------- заявка в .docx (без библиотек: XML + ZIP без сжатия) ---------- */
+const CRC=(()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1?0xEDB88320^(c>>>1):c>>>1; t[n]=c>>>0; } return t; })();
+function crc32(u){ let c=0xFFFFFFFF; for(let i=0;i<u.length;i++) c=CRC[(c^u[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+function zip(files){ // [{name, text}]
+  const enc=new TextEncoder(), parts=[], cd=[]; let off=0;
+  const u16=v=>[v&255,v>>8&255], u32=v=>[v&255,v>>8&255,v>>16&255,v>>>24&255];
+  for(const f of files){ const name=enc.encode(f.name), data=enc.encode(f.text), crc=crc32(data);
+    const common=[...u16(20),...u16(0x0800),...u16(0),...u16(0),...u16(0x21),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0)];
+    const lh=new Uint8Array([...u32(0x04034b50),...common]); parts.push(lh,name,data);
+    cd.push(new Uint8Array([...u32(0x02014b50),...u16(20),...common,...u16(0),...u16(0),...u16(0),...u32(0),...u32(off)]),name);
+    off+=lh.length+name.length+data.length; }
+  const cdSize=cd.reduce((s,x)=>s+x.length,0);
+  const end=new Uint8Array([...u32(0x06054b50),...u16(0),...u16(0),...u16(files.length),...u16(files.length),...u32(cdSize),...u32(off),...u16(0)]);
+  return new Blob([...parts,...cd,end],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+}
+function docxXML(blocks){
+  const x=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const run=(t,o={})=>!t?'':`<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/>${o.b?'<w:b/>':''}${o.i?'<w:i/>':''}<w:color w:val="${o.c||'191919'}"/><w:sz w:val="${o.s||22}"/></w:rPr>${String(t).split('\n').map((l,i)=>(i?'<w:br/>':'')+`<w:t xml:space="preserve">${x(l)}</w:t>`).join('')}</w:r>`;
+  const par=(runs,pp)=>`<w:p><w:pPr>${pp||''}</w:pPr>${runs}</w:p>`, sp=(b,a)=>`<w:spacing w:before="${b}" w:after="${a}" w:line="300" w:lineRule="auto"/>`;
+  const body=blocks.map(b=>{
+    if(b.t==='title') return par(run(b.v,{b:1,s:40}),sp(0,80));
+    if(b.t==='meta') return par(run(b.v,{s:22,c:'646464'}),sp(0,240));
+    if(b.t==='h') return par(run(b.v,{b:1,s:30}),'<w:keepNext/>'+sp(360,140)+'<w:pBdr><w:bottom w:val="single" w:sz="8" w:space="4" w:color="E53E52"/></w:pBdr>');
+    if(b.t==='sub') return par(run(b.v,{b:1,s:24,c:'E53E52'}),'<w:keepNext/>'+sp(200,80));
+    if(b.t==='kv') return par(run(b.k+': ',{b:1})+run(b.v),sp(0,100));
+    if(b.t==='li') return par(run('– ')+(b.b?run(b.b,{b:1})+run(b.v?' – '+b.v:''):run(b.v)),'<w:ind w:left="340" w:hanging="340"/>'+sp(0,80));
+    return par(run(b.v,{i:b.i}),sp(80,100));
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1418" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+}
+function exportDOCX(){
+  const files=[
+    {name:'[Content_Types].xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'},
+    {name:'_rels/.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'},
+    {name:'word/document.xml',text:docxXML(P.toDoc(d))}];
+  download(zip(files),fileName('docx').replace('Презентация','Заявка'));
+}
 
 /* ---------- события ---------- */
 const root=$('#pgb'); let tm;
@@ -669,9 +750,10 @@ function alert0(t){ status(t); }
 $('#pgb-prev').onclick=()=>go(step-1);
 $('#pgb-next').onclick=()=>{ step===STEPS.length-1?generate():go(step+1); };
 $('#pgb-back').onclick=()=>go(step);
-$('#pgb-bg').onclick=()=>{ d.bgShift=(d.bgShift||0)+1; save(); renderPreview(); };
+$('#pgb-bg').onclick=()=>{ const sig=()=>P.build(withImgKeys(),BGS).map(s=>s.bg&&s.bg.id).join(), old=sig();
+  for(let i=0;i<20;i++){ d.bgSeed=(Math.random()*4294967296)>>>0; if(sig()!==old) break; } save(); renderPreview(); };
 $('#pgb-pdf').onclick=exportPDF;
-$('#pgb-txt').onclick=exportTXT;
+$('#pgb-txt').onclick=exportDOCX;
 
 /* ---------- старт ---------- */
 (async()=>{
@@ -685,4 +767,3 @@ $('#pgb-txt').onclick=exportTXT;
   }catch(e){ console.error(e); status('Не загрузились шрифты или библиотека PDF. Проверьте интернет и обновите страницу.'); }
 })();
 }
-
