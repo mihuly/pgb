@@ -541,7 +541,7 @@ const STEPS=[
   {id:'start',title:'Старт',hint:'Общие параметры. Их можно поменять в любой момент.',fields:[
     {k:'stage',type:'seg',label:'Стадия проекта',opts:[['work','Бизнес работает'],['idea','Идея / модель в проверке']],hint:'Меняет слайд «Доказательства» и подсказки к нему.'},
     {k:'cur',type:'seg',label:'Валюта',opts:[['RUB','₽ рубли'],['EUR','€ евро'],['USD','$ доллары']]},
-    {type:'tools'}]}
+    ...(location.hash==='#pgb-demo'?[{type:'tools'}]:[])]}
 ].concat(P.SLIDES.map(s=>Object.assign({id:s.id,n:s.n},s.form)));
 const EXAMPLE={stage:'work',cur:'RUB',name:'Анна Соколова',company:'Хлебная мастерская «Зерно»',sphere:'Ремесленная пекарня на закваске для кафе и частных покупателей',amount:'6500000',horizon:'24',
   who:'Основатель и технолог пекарни. Отвечаю за продукт, рецептуры и работу с ключевыми клиентами.',exp:'8 лет в общепите, 4 года – собственный бизнес. До пекарни запустила и продала кофейню.',since:'4 года, с 2022 года',
@@ -649,6 +649,7 @@ function renderForm(){
   $('#pgb-prev').style.visibility=step?'visible':'hidden';
   $('#pgb-next').textContent=step===STEPS.length-1?'Сгенерировать презентацию':'Далее →';
   $('#pgb-next').className='btn '+(step===STEPS.length-1?'main':'dark');
+  $('#pgb-consent').classList.toggle('hide',step!==STEPS.length-1); $('#pgb-consent').classList.remove('need');
   limits(); const b=$('#pgb-steps .on'); if(b) b.scrollIntoView({block:'nearest',inline:'center'});
 }
 function go(i){ step=Math.max(0,Math.min(STEPS.length-1,i)); show('form'); renderForm(); window.scrollTo({top:$('#pgb').offsetTop,behavior:'smooth'}); }
@@ -748,7 +749,9 @@ root.addEventListener('click',e=>{ const t=e.target.closest('button'); if(!t) re
 });
 function alert0(t){ status(t); }
 $('#pgb-prev').onclick=()=>go(step-1);
-$('#pgb-next').onclick=()=>{ step===STEPS.length-1?generate():go(step+1); };
+$('#pgb-next').onclick=()=>{ if(step!==STEPS.length-1) return go(step+1);
+  if(!$('#pgb-ok').checked){ $('#pgb-consent').classList.add('need'); $('#pgb-ok').focus(); return; } generate(); };
+$('#pgb-ok').onchange=()=>$('#pgb-consent').classList.remove('need');
 $('#pgb-back').onclick=()=>go(step);
 $('#pgb-bg').onclick=()=>{ const sig=()=>P.build(withImgKeys(),BGS).map(s=>s.bg&&s.bg.id).join(), old=sig();
   for(let i=0;i<20;i++){ d.bgSeed=(Math.random()*4294967296)>>>0; if(sig()!==old) break; } save(); renderPreview(); };
